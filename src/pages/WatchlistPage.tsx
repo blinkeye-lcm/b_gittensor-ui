@@ -1,10 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  useRef,
-} from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Avatar,
   Box,
@@ -86,6 +80,8 @@ import {
   type WatchlistCategory,
 } from '../hooks/useWatchlist';
 import { useWatchedPRs, type WatchedPRSource } from '../hooks/useWatchedPRs';
+import { useWatchlistTabState } from '../hooks/useWatchlistTabState';
+import { useInfiniteScrollSentinel } from '../hooks/useInfiniteScrollSentinel';
 import {
   isMergedPr,
   isClosedUnmergedPr,
@@ -176,30 +172,6 @@ const tabFromParam = (param: string | null): WatchlistCategory =>
  * tab content, and clear-confirmation dialog WITHOUT a Page wrapper
  * or sidebar. Used by the unified MinersPage timeline.
  */
-const VIEW_STORAGE_KEY_WATCHLIST = 'watchlist:viewMode';
-
-const useWatchlistViewMode = () => {
-  const [mode, setMode] = useState<'list' | 'cards'>(() => {
-    try {
-      const stored = window.localStorage.getItem(VIEW_STORAGE_KEY_WATCHLIST);
-      return stored === 'cards' || stored === 'list' ? stored : 'cards';
-    } catch {
-      return 'cards';
-    }
-  });
-
-  const setStoredMode = useCallback((newMode: 'list' | 'cards') => {
-    setMode(newMode);
-    try {
-      window.localStorage.setItem(VIEW_STORAGE_KEY_WATCHLIST, newMode);
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  return [mode, setStoredMode] as const;
-};
-
 export const WatchlistContent: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = tabFromParam(searchParams.get('tab'));
@@ -1603,31 +1575,25 @@ const ReposList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
   const { data: repos } = useReposAndWeights();
   const { data: allPrs } = useAllPrs();
   const { data: allMiners } = useAllMiners();
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<RepoStatusFilter>('all');
-  const [viewMode, setViewMode] = useWatchlistViewMode();
+  const {
+    searchQuery,
+    setSearchQuery,
+    statusFilter,
+    setStatusFilter,
+    viewMode,
+    setViewMode,
+    page,
+    setPage,
+    sortField,
+    sortOrder,
+    handleSort,
+  } = useWatchlistTabState<RepoSortKey, RepoStatusFilter>({
+    defaultSort: 'weight',
+    defaultStatus: 'all',
+    getDefaultSortOrder: (field) => (field === 'name' ? 'asc' : 'desc'),
+  });
   const [showChart, setShowChart] = useState(false);
   const [useLogScale, setUseLogScale] = useState(false);
-  const [page, setPage] = useState(0);
-  const observerTarget = useRef<HTMLDivElement>(null);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-
-  const [sortField, setSortField] = useState<RepoSortKey>('weight');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-
-  useEffect(() => {
-    setPage(0);
-  }, [statusFilter, searchQuery, sortField, sortOrder, viewMode]);
-
-  const handleSort = (field: RepoSortKey) => {
-    if (sortField === field) {
-      setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortField(field);
-      setSortOrder(field === 'name' ? 'asc' : 'desc');
-    }
-    setPage(0);
-  };
 
   const items = useMemo<WatchedRepoStats[]>(() => {
     if (!repos) return [];
@@ -1740,24 +1706,11 @@ const ReposList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
     [sorted, page],
   );
 
-  useEffect(() => {
-    const target = observerTarget.current;
-    if (!target) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setIsLoadingMore(true);
-          setTimeout(() => {
-            setPage((p) => p + 1);
-            setIsLoadingMore(false);
-          }, 400);
-        }
-      },
-      { root: null, rootMargin: '0px 0px 400px 0px', threshold: 0 },
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [page, filtered.length]);
+  const hasMore = filtered.length > (page + 1) * ROWS_PER_PAGE;
+  const { sentinelRef, isLoadingMore } = useInfiniteScrollSentinel(
+    hasMore,
+    () => setPage((p) => p + 1),
+  );
 
   const maxWeight = useMemo(
     () =>
@@ -2099,9 +2052,9 @@ const ReposList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
           )}
         </Box>
       )}
-      {filtered.length > (page + 1) * ROWS_PER_PAGE && (
+      {hasMore && (
         <Box
-          ref={observerTarget}
+          ref={sentinelRef}
           sx={{
             height: 60,
             width: '100%',
@@ -2355,29 +2308,23 @@ const BountiesList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
     return allIssues.filter((issue) => set.has(String(issue.id)));
   }, [allIssues, itemKeys]);
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<BountyStatusFilter>('all');
-  const [viewMode, setViewMode] = useWatchlistViewMode();
-  const [page, setPage] = useState(0);
-  const observerTarget = useRef<HTMLDivElement>(null);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-
-  const [sortField, setSortField] = useState<BountySortKey>('date');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-
-  useEffect(() => {
-    setPage(0);
-  }, [statusFilter, searchQuery, sortField, sortOrder, viewMode]);
-
-  const handleSort = (field: BountySortKey) => {
-    if (sortField === field) {
-      setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortField(field);
-      setSortOrder(field === 'repo' ? 'asc' : 'desc');
-    }
-    setPage(0);
-  };
+  const {
+    searchQuery,
+    setSearchQuery,
+    statusFilter,
+    setStatusFilter,
+    viewMode,
+    setViewMode,
+    page,
+    setPage,
+    sortField,
+    sortOrder,
+    handleSort,
+  } = useWatchlistTabState<BountySortKey, BountyStatusFilter>({
+    defaultSort: 'date',
+    defaultStatus: 'all',
+    getDefaultSortOrder: (field) => (field === 'repo' ? 'asc' : 'desc'),
+  });
 
   const counts = useMemo(() => getBountyCounts(items), [items]);
 
@@ -2416,24 +2363,11 @@ const BountiesList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
     [sorted, page],
   );
 
-  useEffect(() => {
-    const target = observerTarget.current;
-    if (!target) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setIsLoadingMore(true);
-          setTimeout(() => {
-            setPage((p) => p + 1);
-            setIsLoadingMore(false);
-          }, 400);
-        }
-      },
-      { root: null, rootMargin: '0px 0px 400px 0px', threshold: 0 },
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [page, filtered.length]);
+  const hasMore = filtered.length > (page + 1) * ROWS_PER_PAGE;
+  const { sentinelRef, isLoadingMore } = useInfiniteScrollSentinel(
+    hasMore,
+    () => setPage((p) => p + 1),
+  );
 
   return (
     <Card
@@ -2473,18 +2407,9 @@ const BountiesList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
         searchPlaceholder="Search bounties..."
         onSearchChange={setSearchQuery}
         viewMode={viewMode}
-        onViewModeChange={(next) => {
-          setViewMode(next);
-          setPage(0);
-        }}
+        onViewModeChange={setViewMode}
         viewModeToggle={
-          <PRsViewModeToggle
-            viewMode={viewMode}
-            onChange={(next) => {
-              setViewMode(next);
-              setPage(0);
-            }}
-          />
+          <PRsViewModeToggle viewMode={viewMode} onChange={setViewMode} />
         }
         hasActiveFilter={statusFilter !== 'all'}
       />
@@ -2558,9 +2483,9 @@ const BountiesList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
           )}
         </Box>
       )}
-      {filtered.length > (page + 1) * ROWS_PER_PAGE && (
+      {hasMore && (
         <Box
-          ref={observerTarget}
+          ref={sentinelRef}
           sx={{
             height: 60,
             width: '100%',
@@ -3109,33 +3034,26 @@ const PRsList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
   const { items, sourcesByKey, isLoading } = useWatchedPRs(itemKeys);
   const prColumns = useMemo(() => buildPrColumns(sourcesByKey), [sourcesByKey]);
   const { isWatched } = useWatchlist('prs');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<PrStatusFilter>('all');
-  const [viewMode, setViewMode] = useWatchlistViewMode();
-  const [page, setPage] = useState(0);
-  const observerTarget = useRef<HTMLDivElement>(null);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-
-  const [sortField, setSortField] = useState<PrSortKey>('date');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-
-  useEffect(() => {
-    setPage(0);
-  }, [statusFilter, searchQuery, sortField, sortOrder, viewMode, isWatched]);
-
-  const handleSort = (field: PrSortKey) => {
-    if (sortField === field) {
-      setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortField(field);
-      setSortOrder(
-        field === 'title' || field === 'author' || field === 'repo'
-          ? 'asc'
-          : 'desc',
-      );
-    }
-    setPage(0);
-  };
+  const {
+    searchQuery,
+    setSearchQuery,
+    statusFilter,
+    setStatusFilter,
+    viewMode,
+    setViewMode,
+    page,
+    setPage,
+    sortField,
+    sortOrder,
+    handleSort,
+  } = useWatchlistTabState<PrSortKey, PrStatusFilter>({
+    defaultSort: 'date',
+    defaultStatus: 'all',
+    getDefaultSortOrder: (field) =>
+      field === 'title' || field === 'author' || field === 'repo'
+        ? 'asc'
+        : 'desc',
+  });
 
   const counts = useMemo(() => getPrStatusCounts(items), [items]);
 
@@ -3184,24 +3102,11 @@ const PRsList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
     [sorted, page],
   );
 
-  useEffect(() => {
-    const target = observerTarget.current;
-    if (!target) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setIsLoadingMore(true);
-          setTimeout(() => {
-            setPage((p) => p + 1);
-            setIsLoadingMore(false);
-          }, 400);
-        }
-      },
-      { root: null, rootMargin: '0px 0px 400px 0px', threshold: 0 },
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [page, filtered.length]);
+  const hasMore = filtered.length > (page + 1) * ROWS_PER_PAGE;
+  const { sentinelRef, isLoadingMore } = useInfiniteScrollSentinel(
+    hasMore,
+    () => setPage((p) => p + 1),
+  );
 
   return (
     <Card
@@ -3260,18 +3165,9 @@ const PRsList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
         searchPlaceholder="Search PRs..."
         onSearchChange={setSearchQuery}
         viewMode={viewMode}
-        onViewModeChange={(next) => {
-          setViewMode(next);
-          setPage(0);
-        }}
+        onViewModeChange={setViewMode}
         viewModeToggle={
-          <PRsViewModeToggle
-            viewMode={viewMode}
-            onChange={(next) => {
-              setViewMode(next);
-              setPage(0);
-            }}
-          />
+          <PRsViewModeToggle viewMode={viewMode} onChange={setViewMode} />
         }
         hasActiveFilter={statusFilter !== 'all'}
       />
@@ -3351,9 +3247,9 @@ const PRsList: React.FC<{ itemKeys: string[] }> = ({ itemKeys }) => {
           )}
         </Box>
       )}
-      {filtered.length > (page + 1) * ROWS_PER_PAGE && (
+      {hasMore && (
         <Box
-          ref={observerTarget}
+          ref={sentinelRef}
           sx={{
             height: 60,
             width: '100%',
@@ -3916,29 +3812,22 @@ const IssuesList: React.FC<{ minerIds: string[] }> = ({ minerIds }) => {
     return Array.from(map.values());
   }, [issueQueries]);
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<IssueStatusFilter>('all');
-  const [viewMode, setViewMode] = useWatchlistViewMode();
-  const [page, setPage] = useState(0);
-  const observerTarget = useRef<HTMLDivElement>(null);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-
-  const [sortField, setSortField] = useState<IssueSortKey>('date');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-
-  useEffect(() => {
-    setPage(0);
-  }, [statusFilter, searchQuery, sortField, sortOrder, viewMode]);
-
-  const handleSort = (field: IssueSortKey) => {
-    if (sortField === field) {
-      setSortOrder((o) => (o === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortField(field);
-      setSortOrder('desc');
-    }
-    setPage(0);
-  };
+  const {
+    searchQuery,
+    setSearchQuery,
+    statusFilter,
+    setStatusFilter,
+    viewMode,
+    setViewMode,
+    page,
+    setPage,
+    sortField,
+    sortOrder,
+    handleSort,
+  } = useWatchlistTabState<IssueSortKey, IssueStatusFilter>({
+    defaultSort: 'date',
+    defaultStatus: 'all',
+  });
 
   const counts = useMemo(() => getIssueCounts(items), [items]);
 
@@ -3974,24 +3863,11 @@ const IssuesList: React.FC<{ minerIds: string[] }> = ({ minerIds }) => {
     [sorted, page],
   );
 
-  useEffect(() => {
-    const target = observerTarget.current;
-    if (!target) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setIsLoadingMore(true);
-          setTimeout(() => {
-            setPage((p) => p + 1);
-            setIsLoadingMore(false);
-          }, 400);
-        }
-      },
-      { root: null, rootMargin: '0px 0px 400px 0px', threshold: 0 },
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [page, filtered.length]);
+  const hasMore = filtered.length > (page + 1) * ROWS_PER_PAGE;
+  const { sentinelRef, isLoadingMore } = useInfiniteScrollSentinel(
+    hasMore,
+    () => setPage((p) => p + 1),
+  );
 
   return (
     <Card
@@ -4108,9 +3984,9 @@ const IssuesList: React.FC<{ minerIds: string[] }> = ({ minerIds }) => {
           )}
         </Box>
       )}
-      {filtered.length > (page + 1) * ROWS_PER_PAGE && (
+      {hasMore && (
         <Box
-          ref={observerTarget}
+          ref={sentinelRef}
           sx={{
             height: 60,
             width: '100%',
